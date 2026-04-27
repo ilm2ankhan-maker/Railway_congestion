@@ -1,92 +1,114 @@
 package com.example.railway_congestion.service;
 
+import com.example.railway_congestion.dto.CongestionResponse;
 import com.example.railway_congestion.model.Reservation;
+import com.example.railway_congestion.model.Station;
 import com.example.railway_congestion.model.Train;
 import com.example.railway_congestion.repository.ReservationRepository;
+import com.example.railway_congestion.repository.StationRepository;
 import com.example.railway_congestion.repository.TrainRepository;
-
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Optional;
 
 @Service
 public class CongestionService {
 
     private final ReservationRepository reservationRepository;
     private final TrainRepository trainRepository;
+    private final StationRepository stationRepository;
 
     public CongestionService(ReservationRepository reservationRepository,
-                             TrainRepository trainRepository) {
+                             TrainRepository trainRepository,
+                             StationRepository stationRepository) {
         this.reservationRepository = reservationRepository;
         this.trainRepository = trainRepository;
-    }
-    public String getCongestionForTrain(int trainId){
-
-        Integer passengers = reservationRepository.getTotalPassengers(trainId);
-
-        if(passengers == null)
-            return "No reservation data";
-
-        if(passengers < 500)
-            return "LOW congestion";
-
-        else if(passengers < 1500)
-            return "MEDIUM congestion";
-
-        else
-            return "HIGH congestion";
+        this.stationRepository = stationRepository;
     }
 
-    public String getStationStatusByPnr(String pnr){
-
-        System.out.println("PNR received: " + pnr);
-
+    /**
+     * Look up congestion by PNR number.
+     * Finds the reservation, then calculates station-level congestion.
+     */
+    public CongestionResponse getStatusByPnr(String pnr) {
         Reservation reservation = reservationRepository.findByPnrNumber(pnr);
-        if (reservation == null){
-            return "pnr not found";
+        if (reservation == null) {
+            return null;
         }
-        System.out.println("Reservation: " + reservation);
 
         Train train = reservation.getTrain();
-        if(train == null){
-            return "train data not found";
+        if (train == null) {
+            return null;
         }
-        System.out.println("Train: " + train);
 
         int stationId = train.getStationId();
-        System.out.println("Station ID: " + stationId);
+        Optional<Station> stationOpt = stationRepository.findById(stationId);
 
-        return getStationCongestion(stationId);
-    }
-
-
-    public String getStationCongestion(int stationId){
-
-        List<Train> trains = trainRepository.findByStationId(stationId);
-
+        // Calculate total passengers at this station across all trains
+        List<Train> trainsAtStation = trainRepository.findByStationId(stationId);
         int totalPassengers = 0;
-
-        for(Train train : trains){
-
-            Integer passengers = reservationRepository.getTotalPassengers(train.getTrainId());
-
-            if(passengers != null){
+        for (Train t : trainsAtStation) {
+            Integer passengers = reservationRepository.getTotalPassengers(t.getTrainId());
+            if (passengers != null) {
                 totalPassengers += passengers;
             }
         }
 
-        return calculateCongestion(totalPassengers);
+        String level = calculateCongestionLevel(totalPassengers);
+
+        return CongestionResponse.builder()
+                .congestionLevel(level)
+                .totalPassengers(totalPassengers)
+                .stationName(stationOpt.map(Station::getStationName).orElse("Unknown"))
+                .city(stationOpt.map(Station::getCity).orElse("Unknown"))
+                .trainName(train.getTrainName())
+                .departureTime(train.getDepartureTime())
+                .platform(train.getPlatform())
+                .pnr(pnr)
+                .journeyDate(reservation.getJourneyDate())
+                .stationId(stationId)
+                .trainId(train.getTrainId())
+                .build();
     }
 
-    public String calculateCongestion(int passengers){
+    /**
+     * Get congestion for a specific station on a specific date.
+     */
+    public CongestionResponse getCongestionByStationAndDate(int stationId, String date) {
+        Optional<Station> stationOpt = stationRepository.findById(stationId);
+        if (stationOpt.isEmpty()) {
+            return null;
+        }
 
-        if(passengers < 500)
-            return "LOW congestion";
+        Station station = stationOpt.get();
+        Integer totalPassengers = reservationRepository.getTotalPassengersByStationAndDate(stationId, date);
+        int passengers = (totalPassengers != null) ? totalPassengers : 0;
+        String level = calculateCongestionLevel(passengers);
 
-        else if(passengers < 2000)
-            return "MEDIUM congestion";
+        return CongestionResponse.builder()
+                .congestionLevel(level)
+                .totalPassengers(passengers)
+                .stationName(station.getStationName())
+                .city(station.getCity())
+                .journeyDate(date)
+                .stationId(stationId)
+                .build();
+    }
 
-        else
-            return "HIGH congestion";
+    /**
+     * Congestion thresholds:
+     * < 500 = LOW
+     * 500 - 1500 = MEDIUM
+     * > 1500 = HIGH
+     */
+    public String calculateCongestionLevel(int passengers) {
+        if (passengers < 500) {
+            return "LOW";
+        } else if (passengers <= 1500) {
+            return "MEDIUM";
+        } else {
+            return "HIGH";
+        }
     }
 }
